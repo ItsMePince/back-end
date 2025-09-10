@@ -6,7 +6,9 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.ResolverStyle;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,11 +26,16 @@ import my_financial_app.demo.Entity.User;
 import my_financial_app.demo.Repository.ExpenseRepository;
 import my_financial_app.demo.Repository.UserRepository;
 
+/**
+ * NOTE:
+ * - รับวันที่จาก front-end ผ่านฟิลด์ req.date (string)
+ * - ใช้ parseDateFlexible(...) เพื่อพาร์สได้ทั้ง "yyyy-MM-dd" และ "d/M/uuuu"
+ */
 @RestController
 @RequestMapping("/api/expenses")
 @CrossOrigin(
-    origins = {"http://localhost:3000"},
-    allowCredentials = "true"
+    origins = {"http://localhost:3000"},   // ปรับให้ตรง origin ของ React ถ้ามี 127.0.0.1 ให้เพิ่มได้
+    allowCredentials = "true"              // ต้องเปิดถ้าใช้ session/cookie
 )
 public class ExpenseController {
 
@@ -40,27 +47,64 @@ public class ExpenseController {
         this.userRepo = userRepo;
     }
 
-    @PostMapping
+    // ---------- DTO สำหรับตอบ JSON (กันวนลูป/LAZY proxy) ----------
+    public static class ExpenseResponse {
+        public Long id;
+        public String type;          // EXPENSE / INCOME
+        public String category;
+        public BigDecimal amount;
+        public String note;
+        public String place;
+        public LocalDate date;
+        public String paymentMethod;
+        public String iconKey;
+        public Long userId;
+        public String username;
+
+        public static ExpenseResponse from(Expense e) {
+            ExpenseResponse r = new ExpenseResponse();
+            r.id = e.getId();
+            r.type = (e.getType() != null) ? e.getType().name() : null;
+            r.category = e.getCategory();
+            r.amount = e.getAmount();
+            r.note = e.getNote();
+            r.place = e.getPlace();
+            r.date = e.getDate();
+            r.paymentMethod = e.getPaymentMethod();
+            r.iconKey = e.getIconKey();
+            if (e.getUser() != null) {
+                r.userId = e.getUser().getId();
+                r.username = e.getUser().getUsername();
+            }
+            return r;
+        }
+    }
+
+    @PostMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> create(
             @Valid @RequestBody CreateExpenseRequest req,
             HttpServletRequest request
     ) {
+        // --- ดึง username จาก session (ตั้งไว้ตอน login) ---
         HttpSession session = request.getSession(false);
         String username = (session != null) ? (String) session.getAttribute("username") : null;
         if (username == null || username.isBlank()) {
             return ResponseEntity.status(401).body("Unauthorized: no login session");
         }
 
+        // --- หา User จาก DB แล้วผูกเป็นเจ้าของรายการ ---
         User owner = userRepo.findByUsername(username).orElse(null);
         if (owner == null) {
             return ResponseEntity.status(404).body("User not found: " + username);
         }
 
+        // DEBUG: log ค่า date ที่เข้ามา
         System.out.println("[POST /api/expenses] user=" + username + ", raw date=" + req.date);
 
         Expense e = new Expense();
-        e.setUser(owner);
+        e.setUser(owner); // 🔗 สำคัญ: ผูก FK ไปที่ users.id
 
+        // ไทย -> Enum
         Expense.EntryType entryType = "รายได้".equals(req.type)
                 ? Expense.EntryType.INCOME
                 : Expense.EntryType.EXPENSE;
@@ -71,6 +115,7 @@ public class ExpenseController {
         e.setNote(req.note);
         e.setPlace(req.place);
 
+        // ✅ พาร์สวันที่แบบยืดหยุ่น
         LocalDate parsed = parseDateFlexible(req.date);
         e.setDate(parsed);
 
@@ -82,10 +127,12 @@ public class ExpenseController {
                            ", userId=" + owner.getId() +
                            ", date=" + saved.getDate());
 
-        return ResponseEntity.ok(saved);
+        // ✅ ตอบกลับเป็น DTO เพื่อหลีกเลี่ยงปัญหา proxy
+        return ResponseEntity.ok(ExpenseResponse.from(saved));
     }
 
-    @PostMapping("/incomes")
+    // shortcut: สร้างเสมอเป็น INCOME
+    @PostMapping(value = "/incomes", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> createIncome(
             @Valid @RequestBody CreateExpenseRequest req,
             HttpServletRequest request
@@ -94,7 +141,8 @@ public class ExpenseController {
         return create(req, request);
     }
 
-    @PostMapping("/spendings")
+    // shortcut: สร้างเสมอเป็น EXPENSE
+    @PostMapping(value = "/spendings", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> createExpense(
             @Valid @RequestBody CreateExpenseRequest req,
             HttpServletRequest request
@@ -103,48 +151,46 @@ public class ExpenseController {
         return create(req, request);
     }
 
-    /* ==================== แก้ส่วน GET ให้เป็นของผู้ใช้ปัจจุบันเท่านั้น ==================== */
-
-    @GetMapping
-    public ResponseEntity<?> listMine(HttpServletRequest request) {
-        String username = getUsernameFromSession(request);
-        if (username == null) {
-            return ResponseEntity.status(401).body("Unauthorized: no login session");
-        }
-        // ต้องมีเมธอดใน Repository: findByUserUsernameOrderByDateDesc
-        List<Expense> myList = repo.findByUserUsernameOrderByDateDesc(username);
-        return ResponseEntity.ok(myList);
+    @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<ExpenseResponse> listAll() {
+        return repo.findAll().stream()
+                .map(ExpenseResponse::from)
+                .collect(Collectors.toList());
     }
 
-
-    /* ==================== helpers ==================== */
-
-    private static String getUsernameFromSession(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        return (session != null) ? (String) session.getAttribute("username") : null;
+    @GetMapping(value = "/range", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<ExpenseResponse> listByRange(@RequestParam String start, @RequestParam String end) {
+        LocalDate s = parseDateFlexible(start);
+        LocalDate e = parseDateFlexible(end);
+        return repo.findByDateBetweenOrderByDateDesc(s, e).stream()
+                .map(ExpenseResponse::from)
+                .collect(Collectors.toList());
     }
 
     /**
      * พาร์สวันที่แบบยืดหยุ่น:
-     * - รูปแบบหลัก: yyyy-MM-dd
-     * - รองรับ: d/M/uuuu
+     * - รูปแบบหลัก: yyyy-MM-dd (เช่น 2025-09-08)  <-- มาตรฐานจาก <input type="date">
+     * - รองรับ: d/M/uuuu (เช่น 8/9/2025)
      */
     private static LocalDate parseDateFlexible(String raw) {
         if (raw == null) return null;
         String s = raw.trim();
 
+        // 1) yyyy-MM-dd
         try {
             DateTimeFormatter iso = DateTimeFormatter.ofPattern("uuuu-MM-dd")
                                                      .withResolverStyle(ResolverStyle.STRICT);
             return LocalDate.parse(s, iso);
         } catch (Exception ignore) {}
 
+        // 2) d/M/uuuu
         try {
             DateTimeFormatter dmY = DateTimeFormatter.ofPattern("d/M/uuuu", Locale.US)
                                                      .withResolverStyle(ResolverStyle.STRICT);
             return LocalDate.parse(s, dmY);
         } catch (Exception ignore) {}
 
-        return LocalDate.parse(s); // fallback
+        // 3) สุดท้าย: พยายาม parse แบบ default (อาจล้มเหลว)
+        return LocalDate.parse(s);
     }
 }
