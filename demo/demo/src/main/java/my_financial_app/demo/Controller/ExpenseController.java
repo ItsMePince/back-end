@@ -1,3 +1,4 @@
+// src/main/java/my_financial_app/demo/Controller/ExpenseController.java
 package my_financial_app.demo.Controller;
 
 import java.math.BigDecimal;
@@ -6,11 +7,15 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.ResolverStyle;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -24,15 +29,10 @@ import my_financial_app.demo.Entity.User;
 import my_financial_app.demo.Repository.ExpenseRepository;
 import my_financial_app.demo.Repository.UserRepository;
 
-/**
- * NOTE:
- * - รับวันที่จาก front-end ผ่านฟิลด์ req.date (string)
- * - ใช้ parseDateFlexible(...) เพื่อพาร์สได้ทั้ง "yyyy-MM-dd" และ "dd/MM/yyyy"
- */
 @RestController
 @RequestMapping("/api/expenses")
 @CrossOrigin(
-    origins = {"http://localhost:3000"},
+    origins = {"http://localhost:3000","http://localhost:5173"},
     allowCredentials = "true"
 )
 public class ExpenseController {
@@ -45,7 +45,6 @@ public class ExpenseController {
         this.userRepo = userRepo;
     }
 
-    /* ----------------- CREATE ----------------- */
     @PostMapping
     public ResponseEntity<?> create(
             @Valid @RequestBody CreateExpenseRequest req,
@@ -53,39 +52,25 @@ public class ExpenseController {
     ) {
         User owner = requireLoginUser(request);
         if (owner == null) {
-            return ResponseEntity.status(401).body("Unauthorized: no login session");
+            return ResponseEntity.status(401).body("Unauthorized");
         }
-
-        System.out.println("[POST /api/expenses] user=" + owner.getUsername() + ", raw date=" + req.date);
-
         Expense e = new Expense();
-        e.setUser(owner); // 🔗 ผูก FK
-
+        e.setUser(owner);
         Expense.EntryType entryType = "รายได้".equals(req.type)
                 ? Expense.EntryType.INCOME
                 : Expense.EntryType.EXPENSE;
-
         e.setType(entryType);
         e.setCategory(req.category);
         e.setAmount(BigDecimal.valueOf(req.amount));
         e.setNote(req.note);
         e.setPlace(req.place);
-
-        LocalDate parsed = parseDateFlexible(req.date);
-        e.setDate(parsed);
-
+        e.setDate(parseDateFlexible(req.date));
         e.setPaymentMethod(req.paymentMethod);
         e.setIconKey(req.iconKey);
-
         Expense saved = repo.save(e);
-        System.out.println("[POST /api/expenses] saved id=" + saved.getId() +
-                           ", userId=" + owner.getId() +
-                           ", date=" + saved.getDate());
-
         return ResponseEntity.ok(saved);
     }
 
-    // shortcut: INCOME
     @PostMapping("/incomes")
     public ResponseEntity<?> createIncome(
             @Valid @RequestBody CreateExpenseRequest req,
@@ -95,7 +80,6 @@ public class ExpenseController {
         return create(req, request);
     }
 
-    // shortcut: EXPENSE
     @PostMapping("/spendings")
     public ResponseEntity<?> createExpense(
             @Valid @RequestBody CreateExpenseRequest req,
@@ -105,20 +89,16 @@ public class ExpenseController {
         return create(req, request);
     }
 
-    /* ----------------- READ (FILTERED BY LOGIN USER) ----------------- */
-
-    // ✅ ดึงทั้งหมดของ "ผู้ใช้ที่ล็อกอินเท่านั้น"
     @GetMapping
     public ResponseEntity<?> listMine(HttpServletRequest request) {
         User owner = requireLoginUser(request);
         if (owner == null) {
-            return ResponseEntity.status(401).body("Unauthorized: no login session");
+            return ResponseEntity.status(401).body("Unauthorized");
         }
         List<Expense> result = repo.findByUserIdOrderByDateDesc(owner.getId());
         return ResponseEntity.ok(result);
     }
 
-    // ✅ ดึงตามช่วงวันที่ ของ "ผู้ใช้ที่ล็อกอินเท่านั้น"
     @GetMapping("/range")
     public ResponseEntity<?> listByRange(
             @RequestParam String start,
@@ -127,19 +107,61 @@ public class ExpenseController {
     ) {
         User owner = requireLoginUser(request);
         if (owner == null) {
-            return ResponseEntity.status(401).body("Unauthorized: no login session");
+            return ResponseEntity.status(401).body("Unauthorized");
         }
-
         LocalDate s = parseDateFlexible(start);
         LocalDate e = parseDateFlexible(end);
-
         List<Expense> result = repo.findByUserIdAndDateBetweenOrderByDateDesc(owner.getId(), s, e);
         return ResponseEntity.ok(result);
     }
 
-    /* ----------------- HELPERS ----------------- */
+    @PutMapping("/{id}")
+    public ResponseEntity<?> updateOne(
+            @PathVariable Long id,
+            @Valid @RequestBody CreateExpenseRequest req,
+            HttpServletRequest request
+    ) {
+        User owner = requireLoginUser(request);
+        if (owner == null) {
+            return ResponseEntity.status(401).body("Unauthorized");
+        }
+        Optional<Expense> opt = repo.findByIdAndUserId(id, owner.getId());
+        if (opt.isEmpty()) {
+            return ResponseEntity.status(404).body("Not found");
+        }
+        Expense e = opt.get();
+        Expense.EntryType entryType = "รายได้".equals(req.type)
+                ? Expense.EntryType.INCOME
+                : Expense.EntryType.EXPENSE;
+        e.setType(entryType);
+        e.setCategory(req.category);
+        e.setAmount(BigDecimal.valueOf(req.amount));
+        e.setNote(req.note);
+        e.setPlace(req.place);
+        e.setDate(parseDateFlexible(req.date));
+        e.setPaymentMethod(req.paymentMethod);
+        e.setIconKey(req.iconKey);
+        Expense saved = repo.save(e);
+        return ResponseEntity.ok(saved);
+    }
 
-    /** ดึง User จาก session ("username") ถ้าไม่มีให้คืน null */
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> deleteOne(
+            @PathVariable Long id,
+            HttpServletRequest request
+    ) {
+        User owner = requireLoginUser(request);
+        if (owner == null) {
+            return ResponseEntity.status(401).body("Unauthorized");
+        }
+        Optional<Expense> opt = repo.findByIdAndUserId(id, owner.getId());
+        if (opt.isEmpty()) {
+            return ResponseEntity.status(404).body("Not found");
+        }
+        repo.deleteById(id);
+        return ResponseEntity.noContent().build();
+    }
+
     private User requireLoginUser(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
         String username = (session != null) ? (String) session.getAttribute("username") : null;
@@ -147,30 +169,30 @@ public class ExpenseController {
         return userRepo.findByUsername(username).orElse(null);
     }
 
-    /**
-     * พาร์สวันที่แบบยืดหยุ่น:
-     * - รูปแบบหลัก: yyyy-MM-dd (เช่น 2025-09-08)
-     * - รองรับ: d/M/uuuu (เช่น 8/9/2025)
-     */
     private static LocalDate parseDateFlexible(String raw) {
         if (raw == null) return null;
         String s = raw.trim();
-
-        // 1) yyyy-MM-dd
         try {
             DateTimeFormatter iso = DateTimeFormatter.ofPattern("uuuu-MM-dd")
                                                      .withResolverStyle(ResolverStyle.STRICT);
             return LocalDate.parse(s, iso);
         } catch (Exception ignore) {}
-
-        // 2) d/M/uuuu
         try {
             DateTimeFormatter dmY = DateTimeFormatter.ofPattern("d/M/uuuu", Locale.US)
                                                      .withResolverStyle(ResolverStyle.STRICT);
             return LocalDate.parse(s, dmY);
         } catch (Exception ignore) {}
-
-        // 3) default
         return LocalDate.parse(s);
+    }
+
+    public static class CreateExpenseRequest {
+        public String type;
+        public String category;
+        public double amount;
+        public String note;
+        public String place;
+        public String date;
+        public String paymentMethod;
+        public String iconKey;
     }
 }
