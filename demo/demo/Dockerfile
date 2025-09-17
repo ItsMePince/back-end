@@ -1,6 +1,8 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
-COPY . .
+COPY .mvn/ .mvn/
+COPY mvnw .
+COPY pom.xml .
 RUN ./mvnw spring-boot:run
 
 FROM eclipse-temurin:21-jre
