@@ -1,0 +1,57 @@
+name: Back-end CI
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - "demo/demo/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - "demo/demo/**"
+      - ".github/workflows/backend-ci.yml"
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # ทำงานในโฟลเดอร์ที่มี pom.xml/mvnw
+    defaults:
+      run:
+        working-directory: demo/demo
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Make mvnw executable (safe)
+        run: chmod +x mvnw || true
+
+      - name: Resolve deps offline
+        run: ./mvnw -q -B -DskipTests dependency:go-offline
+
+      # เปิดได้เมื่อพร้อมรันเทส
+      # - name: Test
+      #   run: ./mvnw -B test
+
+      - name: Package (skip tests)
+        run: ./mvnw -B -DskipTests package
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: demo/demo/target/*.jar   # path อ้างจาก root repo
+          if-no-files-found: error
